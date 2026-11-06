@@ -1,0 +1,41 @@
+{
+  "title": "Coach Milo",
+  "handle": "raaaaa",
+  "description": "A 3D coach appears in your room through your phone camera and leads a short workout of two stretches, with spoken lines and captions. Point the phone at the floor and move it slowly.",
+  "assets": [
+    {
+      "file": "assets/coach/gymbro.glb",
+      "source": "https://vibeassets.io/a/vr9ojdtnca",
+      "license": "CC0 1.0 (public domain) — the asset page and https://vibeassets.io/llms.txt both state all assets on the site are CC0"
+    },
+    {
+      "file": "assets/coach/mannequin_man.glb",
+      "source": "https://heyheythere.itch.io/psx-animation-library-free",
+      "license": "CC BY 4.0"
+    },
+    {
+      "file": "assets/coach/mannequin_woman.glb",
+      "source": "https://heyheythere.itch.io/psx-animation-library-free",
+      "license": "CC BY 4.0"
+    },
+    {
+      "file": "assets/textures/atlas.png",
+      "source": "https://heyheythere.itch.io/psx-animation-library-free",
+      "license": "CC BY 4.0"
+    },
+    {
+      "file": "assets/coach/LICENSE-psx-animation-library-free.txt",
+      "source": "https://heyheythere.itch.io/psx-animation-library-free",
+      "license": "CC BY 4.0"
+    }
+  ],
+  "ai_assets": [
+    "assets/audio/coach/greet.mp3",
+    "assets/audio/coach/motivate.mp3",
+    "assets/audio/coach/stretch-1.mp3",
+    "assets/audio/coach/stretch-1-done.mp3",
+    "assets/audio/coach/stretch-2.mp3",
+    "assets/audio/coach/cheer.mp3",
+    "assets/audio/coach/goodbye.mp3"
+  ]
+}

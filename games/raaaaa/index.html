@@ -1,0 +1,637 @@
+<!-- Page shell for "Coach Milo": camera video behind, three.js canvas on top, touch UI over both, and the import map that pins every dependency. -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- viewport-fit=cover so the layout can reach into the notch area, which the safe-area insets below then respect. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d0f14">
+  <title>Coach Milo — a two-stretch workout in your room</title>
+  <!-- An inline icon, so the browser does not ask for /favicon.ico and log a 404 in the console.
+       It is a tiny data URI rather than a file: one less thing to ship, and no extra request. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d0f14'/><circle cx='16' cy='11' r='4.2' fill='%23ffd166'/><path d='M9 27c0-4 3.2-6.4 7-6.4S23 23 23 27z' fill='%23ffd166'/></svg>">
+  <style>
+    :root {
+      /* Candy bubbles. Each colour is light enough to carry the dark ink on top of it, so a button
+         never needs a border to be readable: the fill does the work. */
+      --gold: #FFD166;   /* the primary action, and the countdown */
+      --coral: #FF7A85;
+      --sky: #6FD3FF;
+      --mint: #7BE3B3;
+      --fog: #A9A2C6;    /* the muted one, so End reads as the quietest button in the row */
+      --ink: #22162E;    /* everything written ON candy */
+      --on-dark: #FFFFFF; /* everything written on a dark chip */
+      /* One dark panel colour for every piece of furniture, see-through enough that the room still
+         shows through it. It is paired with the blur below wherever readability has to survive a
+         bright room. */
+      --chip: rgba(22, 14, 30, 0.55);
+      --chip-line: rgba(255, 255, 255, 0.18);
+      --safe-t: env(safe-area-inset-top, 0px);
+      --safe-b: env(safe-area-inset-bottom, 0px);
+      --safe-l: env(safe-area-inset-left, 0px);
+      --safe-r: env(safe-area-inset-right, 0px);
+      /* Big enough for a thumb: nothing interactive is smaller than this. */
+      --touch: 48px;
+      /* The press is quick and the release is springy. Two dials, so every button feels the same. */
+      --press: 90ms ease-out;
+      --spring: 340ms cubic-bezier(.34, 1.56, .64, 1);
+      /* A candy button's "thickness". The 0 6px 0 offset is what makes a press read as a push
+         rather than a fade — it is the whole toy quality of the button. */
+      --thick: 0 6px 0 rgba(0, 0, 0, 0.18), 0 10px 22px rgba(0, 0, 0, 0.22);
+      --thick-press: 0 2px 0 rgba(0, 0, 0, 0.18), 0 6px 14px rgba(0, 0, 0, 0.2);
+    }
+
+    /* The hidden attribute has to win over every display rule below it. A button that sets
+       `display: inline-flex` ignores the browser's own `[hidden] { display: none }`, so setting
+       .hidden = true on it left a button-shaped hole on the screen with no label in it. */
+    [hidden] { display: none !important; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0d0f14;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none;
+      user-select: none;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: var(--on-dark);
+    }
+
+    /* The room the camera sees, filling the window and sitting behind everything. */
+    #cam {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #0d0f14;
+    }
+
+    /* The world-tracking engine's own canvas: it draws the live camera into this one AND renders the
+       three.js scene on top of it, so it must be a canvas of its own. It stays hidden until the
+       engine actually takes over; the plain camera video above is what everyone else sees. */
+    #camerafeed {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #0d0f14;
+    }
+
+    /* The coach is drawn here, over the video. transparent:true on the renderer lets the room show through. */
+    #view {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    /* The `hidden` attribute is only a UA-stylesheet rule (`display: none`), and the ID rules above
+       outrank it — so without these two lines, `element.hidden = true` does nothing at all and both
+       canvases stay full-window and visible whatever the code says. That is what put an opaque black
+       canvas over the plain camera feed, and it would have put the game's own canvas over the AR one.
+       The engine's canvas keeps its display and gives up visibility instead: the engine sizes its
+       drawing buffer from this element's measured client size, and a display:none element measures
+       0×0. */
+    #cam[hidden], #view[hidden] { display: none; }
+    #camerafeed[hidden] { visibility: hidden; }
+
+    /* Tracking errors go here, over everything. The engine's own error screens are opaque full-window
+       panels at z-index 999, and they are exactly what this has to be readable through. */
+    #engine-err {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      z-index: 100000;
+      padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 10px;
+      background: rgba(122, 22, 22, 0.95);
+      color: #fff;
+      font-size: 13px;
+      line-height: 1.35;
+      text-align: center;
+      word-break: break-word;
+    }
+    #engine-err[hidden] { display: none; }
+
+    /* ---- candy buttons: one class, every button on the page ---------------------------------- */
+
+    /* The shared shape and the shared feel. --bg and --glow are set per button below, so a button
+       that wants a different colour only has to name two values. The glow replaces a border: a hard
+       line around a light fill is what made the old buttons read as web UI rather than as toys. */
+    .candy {
+      box-sizing: border-box;
+      min-height: 54px;
+      padding: 0 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 999px;
+      background: var(--bg, var(--gold));
+      color: var(--ink);
+      font-family: inherit;
+      font-weight: 800;
+      font-size: 18px;
+      line-height: 1.15;
+      letter-spacing: 0.2px;
+      text-align: center;
+      cursor: pointer;
+      touch-action: manipulation;
+      transform: translateY(0) scale(1);
+      box-shadow: var(--thick), 0 0 22px var(--glow, rgba(255, 209, 102, 0.35));
+      transition: transform var(--spring), box-shadow var(--spring);
+      /* The HUD around the buttons stays see-through; the buttons themselves take the taps. */
+      pointer-events: auto;
+    }
+
+    /* Press: the button sinks by its own thickness, quickly. */
+    .candy:active {
+      transform: translateY(4px) scale(0.97);
+      box-shadow: var(--thick-press), 0 0 16px var(--glow, rgba(255, 209, 102, 0.35));
+      transition: transform var(--press), box-shadow var(--press);
+    }
+
+    .candy:disabled { opacity: 0.45; box-shadow: var(--thick); }
+
+    /* The click pop. ui.js re-triggers this on every button, and this is what a tap sounds like
+       with the sound off. */
+    @keyframes pop {
+      0% { transform: scale(1); }
+      35% { transform: scale(0.9); }
+      70% { transform: scale(1.05); }
+      100% { transform: scale(1); }
+    }
+
+    .candy.pop { animation: pop 320ms ease-out; }
+
+    /* The four utility bubbles: the same candy, smaller, one colour each so the row reads as a set
+       of four rather than as four anonymous chips. The padding is tighter than a lone pill's 26px
+       on purpose: four of these have to sit on one line across a 390px phone, and they come
+       4 × 8px = 32px closer to fitting that way. */
+    .bubble {
+      min-height: 54px;
+      min-width: var(--touch);
+      padding: 0 12px;
+      font-size: 15px;
+    }
+
+    #btn-mute { --bg: var(--coral); --glow: rgba(255, 122, 133, 0.45); }
+    #btn-replace { --bg: var(--sky); --glow: rgba(111, 211, 255, 0.45); }
+    #btn-skip { --bg: var(--mint); --glow: rgba(123, 227, 179, 0.45); }
+    #btn-quit { --bg: var(--fog); --glow: rgba(169, 162, 198, 0.4); }
+
+    /* ---- the running workout's furniture ------------------------------------------------- */
+
+    /* Portrait, bottom-up: the stretch and the utility bubbles at the top, the caption and the one
+       big button at the bottom, and nothing in between. The empty middle is deliberate — it belongs
+       to the room and the coach, and the taps that place him have to reach the camera feed there. */
+    #hud {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      /* The middle of the screen belongs to the coach: taps pass through the gaps between panels. */
+      pointer-events: none;
+      padding: calc(var(--safe-t) + 10px) calc(var(--safe-r) + 18px)
+               calc(var(--safe-b) + 10px) calc(var(--safe-l) + 18px);
+    }
+
+    #hud[hidden] { display: none; }
+
+    .hud-top {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* A quiet label, not a button: which stretch we are on. Every chip is border-box, so the
+       max-width below is the width you see rather than the width plus its own padding. */
+    #step-title {
+      box-sizing: border-box;
+      max-width: 100%;
+      padding: 10px 22px;
+      border-radius: 999px;
+      background: var(--chip);
+      -webkit-backdrop-filter: blur(12px) saturate(1.4);
+      backdrop-filter: blur(12px) saturate(1.4);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+      color: var(--on-dark);
+      font-weight: 800;
+      font-size: 23px;
+      line-height: 1.2;
+      letter-spacing: 0.2px;
+      text-align: center;
+    }
+
+    /* flex-wrap is a safety net, not a plan: on a 320px screen the four labels are wider than the
+       screen, and a wrapped row is still playable where an overflowing one is not. width: 100% is
+       what makes that work — a shrink-to-fit row is as wide as its own content, so it would never
+       reach the point of wrapping and would simply hang off the right-hand edge instead. */
+    .tools {
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    /* The bottom stack. It is a flex column so the caption sits above the button by construction —
+       the old layout had both pinned to the same corner and needed ui.js to nudge one out of the
+       way, which is the job this column now does. */
+    .hud-bottom {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* The one big button: full width minus the HUD's own 18px side padding, and the loudest
+       colour on the page. */
+    #btn-action {
+      --bg: var(--gold);
+      --glow: rgba(255, 209, 102, 0.45);
+      width: 100%;
+      min-height: 62px;
+      font-size: 19px;
+    }
+
+    /* Captions for the spoken line, so the workout still works with the sound off. */
+    #caption {
+      box-sizing: border-box;
+      max-width: 86vw;
+      margin: 0;
+      padding: 10px 18px;
+      border-radius: 22px;
+      background: var(--chip);
+      -webkit-backdrop-filter: blur(12px) saturate(1.4);
+      backdrop-filter: blur(12px) saturate(1.4);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+      color: var(--on-dark);
+      font-weight: 600;
+      font-size: 17px;
+      line-height: 1.35;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    #caption[hidden] { display: none; }
+
+    /* The countdown. It is a fat gold bubble parked in the band between the utility bubbles and the
+       coach's raised hands — the middle of the screen is where he stretches, and a bubble there hid
+       his head and chest entirely. Measured from a render of this page, the framing puts his
+       fingertips about 30% down the screen in the no-camera view, so the bubble's top edge is
+       pinned just under the button row (which ends at about safe-t + 132px) rather than to a
+       percentage: a percentage moves with the screen's height, and the button row does not.
+       `top` + `margin-left` do the positioning, NOT `transform`, so the pop below can own the
+       transform on its own. */
+    #count {
+      --count: min(34vw, 124px);
+      box-sizing: border-box;
+      position: fixed;
+      left: 50%;
+      top: calc(var(--safe-t) + 136px);
+      z-index: 4;
+      margin-left: calc(var(--count) / -2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: var(--count);
+      height: var(--count);
+      border-radius: 50%;
+      background: var(--gold);
+      color: var(--ink);
+      font-weight: 800;
+      font-size: min(54px, 16vw);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      box-shadow: 0 8px 0 rgba(0, 0, 0, 0.18), 0 16px 34px rgba(0, 0, 0, 0.35),
+                  0 0 40px rgba(255, 209, 102, 0.4);
+      pointer-events: none;
+    }
+
+    #count[hidden] { display: none; }
+
+    /* Each new number lands with a small wobble, like a bubble arriving. ui.js only re-triggers
+       this when the number actually changed: it is called every frame with the same value, and an
+       animation restarted every frame never plays at all. */
+    @keyframes count-pop {
+      0% { transform: scale(1.3) rotate(-2deg); }
+      65% { transform: scale(1) rotate(2deg); }
+      100% { transform: scale(1) rotate(0deg); }
+    }
+
+    #count.count-pop { animation: count-pop 300ms ease-out; }
+
+    /* ---- full-screen cards: the start screen, the finish screen, the error line ----------- */
+
+    .sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 3;
+      display: flex;
+      /* NOT `align-items: center`. A centred flex item that is taller than its scroll container
+         loses its top edge off the top of the screen, where nobody can scroll to reach it — which
+         is exactly what happened to the finish card. `margin: auto` on the card centres it when
+         there is room and lets it scroll when there is not. */
+      align-items: flex-start;
+      justify-content: center;
+      padding: calc(var(--safe-t) + 14px) calc(var(--safe-r) + 14px)
+               calc(var(--safe-b) + 14px) calc(var(--safe-l) + 14px);
+      background: rgba(8, 9, 13, 0.8);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 440px;
+      box-sizing: border-box;
+      padding: 26px 22px;
+      margin: auto; /* pairs with align-items: flex-start — see the note above */
+      border-radius: 30px;
+      background: var(--chip);
+      -webkit-backdrop-filter: blur(12px) saturate(1.4);
+      backdrop-filter: blur(12px) saturate(1.4);
+      text-align: center;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+      /* The card arrives rather than appearing: the same spring as a button release, so the whole
+         page feels like it is made of the same stuff. Re-shown cards replay it, because hiding one
+         with `display: none` throws the animation away with the box. */
+      animation: card-in 420ms cubic-bezier(.34, 1.56, .64, 1) both;
+    }
+
+    @keyframes card-in {
+      from { opacity: 0; transform: translateY(24px) scale(0.96); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Friendly comes from weight and size, not from a new font: there is no web font on this page. */
+    .card h1 { margin: 0 0 10px; font-size: 27px; font-weight: 800; letter-spacing: 0.2px; }
+    .card h2 { margin: 0 0 10px; font-size: 24px; font-weight: 800; letter-spacing: 0.2px; }
+    .card p { margin: 0 0 16px; font-size: 16px; font-weight: 600; line-height: 1.5; color: #DCD6EA; }
+    .card .who { color: var(--gold); font-weight: 800; }
+
+    /* THE HOME CARD. This one is the coach's screen, so it breaks the other cards' rules in exactly
+       two ways: the dark scrim goes, and the card drops to the bottom of the screen. The coach waves
+       behind it in the same no-camera framing the workout uses, and anything he is standing in front
+       of has to be see-through or it would paint over him — the scrim that makes the other cards easy
+       to read would hide the whole character. A warm pool of light behind his feet does the job the
+       scrim was doing, in the game's own gold. */
+    #home {
+      background: radial-gradient(ellipse 94% 48% at 50% 64%,
+                                  rgba(255, 209, 102, 0.18), rgba(255, 209, 102, 0) 62%);
+    }
+    /* `margin: auto auto 0` = centred left to right, pinned to the bottom. It has to beat the plain
+       `margin: auto` on .card, which centres the card the way every other card wants. */
+    #home .card { margin: auto auto 0; }
+    #home h1 { font-size: 34px; margin-bottom: 8px; }
+    #home .card p { margin-bottom: 20px; }
+
+    .buttons { display: flex; flex-direction: column; gap: 10px; }
+    .buttons .row { display: flex; gap: 10px; }
+    .buttons .row > * { flex: 1; }
+
+    /* Card buttons: the same candy as the HUD's, full width, one size down from the action button. */
+    .buttons .candy { width: 100%; min-height: 56px; font-size: 17px; }
+    #btn-start, #btn-again, #btn-play { --bg: var(--gold); --glow: rgba(255, 209, 102, 0.45); min-height: 60px; }
+    #btn-play { font-size: 20px; }
+    #btn-preview { --bg: var(--sky); --glow: rgba(111, 211, 255, 0.45); }
+    #btn-restart { --bg: var(--coral); --glow: rgba(255, 122, 133, 0.45); }
+
+    /* A completed stretch ticks over; the rest stay quiet. */
+    #summary { margin: 0 0 18px; padding: 0; list-style: none; text-align: left; }
+    #summary li { padding: 8px 0; font-size: 16px; border-top: 1px solid var(--chip-line); }
+
+    /* The plain-English line for a camera or sensor problem. It sits ABOVE the bottom stack, which
+       is why it is measured from the bottom: on the way in, while the coach is still loading, it is
+       the only thing on screen and the space below it is still empty. 200px is the tallest that
+       stack ever gets — a caption that wraps to four lines, the gap, the big button and the HUD's
+       own padding come to about 194px — so the hint can land neither on the words below it nor on
+       the button under those. */
+    #hint {
+      box-sizing: border-box;
+      position: fixed;
+      left: 50%;
+      bottom: calc(var(--safe-b) + 200px);
+      z-index: 4;
+      transform: translateX(-50%);
+      max-width: min(86vw, 520px);
+      margin: 0;
+      padding: 10px 16px;
+      border-radius: 22px;
+      background: var(--chip);
+      -webkit-backdrop-filter: blur(12px) saturate(1.4);
+      backdrop-filter: blur(12px) saturate(1.4);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+      color: #FFD9D9;
+      font-weight: 600;
+      font-size: 15px;
+      line-height: 1.35;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    #hint[hidden] { display: none; }
+
+    /* 320px is the narrowest phone this has to work on. Four bubbles of 15px type are 293px wide
+       there against 284px of room, and letting them wrap puts a second row of bubbles right under
+       the countdown — so on the small ones they give up some type size and come in at about 270px
+       instead. The 44px floor is the smallest a thumb target is allowed to be, not a preference. */
+    @media (max-width: 380px) {
+      #step-title { font-size: 20px; }
+      .tools { gap: 6px; }
+      .bubble { font-size: 13px; padding: 0 9px; min-width: 44px; }
+    }
+
+    @media (max-width: 330px) {
+      .bubble { font-size: 12px; }
+    }
+
+    /* A short screen is a phone turned on its side. The layout is portrait-first, and landscape
+       does not have to be beautiful — but the countdown must not swallow the screen and the cards
+       must not need scrolling to reach their buttons. */
+    @media (max-height: 460px) {
+      .card { padding: 16px 18px; }
+      .card h1 { font-size: 21px; margin-bottom: 6px; }
+      .card h2 { font-size: 19px; margin-bottom: 6px; }
+      .card p { font-size: 14px; margin-bottom: 10px; }
+      #summary { margin-bottom: 12px; }
+      #summary li { padding: 5px 0; font-size: 14px; }
+      .buttons .candy { min-height: var(--touch); font-size: 15px; }
+      #home h1 { font-size: 26px; }
+      #btn-action, #btn-start, #btn-again { min-height: var(--touch); }
+      #step-title { font-size: 19px; padding: 8px 18px; }
+      .bubble { min-height: var(--touch); }
+      /* Held sideways there is no band to park in: on a 460px-tall screen the coach's head is only
+         a third of the way down, and the button row ends above that. So out here the bubble leaves
+         the middle of the screen altogether and takes the top corner, which nothing else uses. */
+      #count { --count: min(26vw, 104px); font-size: min(46px, 20vw);
+               top: calc(var(--safe-t) + 108px); left: auto;
+               right: calc(var(--safe-r) + 12px); margin-left: 0; }
+      #hint { bottom: calc(var(--safe-b) + 96px); font-size: 14px; }
+    }
+
+    /* Anyone who has asked their device for less motion gets the same states without the travel.
+       Every transform is taken away; a press still darkens and still drops its shadow, so the tap is
+       still answered, it just does not move. */
+    @media (prefers-reduced-motion: reduce) {
+      .candy { transition: none; transform: none; }
+      .candy:active { transform: none; }
+      .candy.pop { animation: none; }
+      .card { animation: none; }
+      #count.count-pop { animation: none; }
+    }
+  </style>
+
+  <!--
+    Every dependency is pinned here, and this is the only place our own version number lives.
+
+    The `?v=` on our files is the version dial. Hostinger's CDN caches .js for days and ignores our
+    cache headers, so uploading a changed file was invisible: the old copy kept being served. A new
+    `?v=` makes every module a brand new address, so there is nothing stale to hand out. This file
+    itself is never cached, which is what makes it the right dial. deploy.py bumps it for you.
+
+    three.js is pinned to one version and comes from unpkg. GLTFLoader is the loader for the coach's
+    .glb, and it has to be the same version as the core, or the addon's imports break.
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.186.1/examples/jsm/",
+        "jam/main": "./main.js?v=20",
+        "jam/tuning": "./tuning.js?v=20",
+        "jam/camera": "./camera.js?v=20",
+        "jam/coach": "./coach.js?v=20",
+        "jam/workout": "./workout.js?v=20",
+        "jam/speech": "./speech.js?v=20",
+        "jam/poses": "./poses.js?v=20",
+        "jam/placement": "./placement.js?v=20",
+        "jam/ar": "./ar.js?v=20",
+        "jam/ui": "./ui.js?v=20",
+        "jam/orientation": "./orientation.js?v=20"
+      }
+    }
+  </script>
+
+  <!--
+    The world-tracking engine, loaded here rather than on the tap that needs it. iOS only opens the
+    camera and the motion sensors from inside a real user gesture, and fetching a megabyte of engine
+    while the gesture is alive spends it — the engine then fails at camera selection and shows its own
+    "Oops, something went wrong" screen. Loaded at page load, the tap can start it immediately.
+
+    data-preload-chunks="slam" is what fetches the world-tracking part of the engine. Without it there
+    is no 6DoF, and the engine reports "Limited" forever.
+
+    8th Wall Engine (c) Niantic Spatial, used under the 8th Wall Engine Binary Licence Agreement,
+    which is NOT an open-source licence: https://github.com/8thwall/engine/blob/main/LICENSE
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js"
+          async crossorigin="anonymous" data-preload-chunks="slam"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js"
+          crossorigin="anonymous"></script>
+</head>
+<body>
+  <!-- The room, then the coach drawn over it. Both fill the screen. -->
+  <video id="cam" autoplay playsinline muted></video>
+  <!-- The engine's canvas. Only shown if the world-tracking engine takes the camera over. -->
+  <canvas id="camerafeed" hidden></canvas>
+  <canvas id="view"></canvas>
+
+  <!-- The tracking engine's own errors, in the engine's own words. Hidden until it has something to
+       say; see engineErrorLine() in main.js. -->
+  <div id="engine-err" hidden></div>
+
+  <!-- The running workout. Hidden until there is a coach and a session.
+       Portrait, bottom-up: which stretch we are on and the four utility bubbles at the top, the
+       caption and the one big button at the bottom, and an empty middle. The middle has to stay
+       empty and untappable — that is where the coach stands and where the taps that place him land.
+       The caption lives in the bottom stack rather than being pinned to the corner, so it sits
+       above the button by construction and never has to be moved out of its way. -->
+  <div id="hud" hidden>
+    <div class="hud-top">
+      <div id="step-title">Getting ready</div>
+      <div class="tools">
+        <button id="btn-mute" class="candy bubble" type="button" aria-pressed="false">Sound on</button>
+        <button id="btn-replace" class="candy bubble" type="button">Move coach</button>
+        <button id="btn-skip" class="candy bubble" type="button">Skip</button>
+        <button id="btn-quit" class="candy bubble" type="button">End</button>
+      </div>
+    </div>
+    <div class="hud-bottom">
+      <p id="caption" hidden></p>
+      <button id="btn-action" class="candy" type="button">Start workout</button>
+    </div>
+  </div>
+
+  <!-- The countdown and the hint are outside #hud on purpose: the hint has to be able to show while
+       the workout furniture is still hidden, because it is what says "starting the camera…". -->
+  <div id="count" hidden>10</div>
+
+  <!-- THE HOME CARD. Everything the player taps starts here: one Play button, and the coach himself
+       waving behind it from the moment the model arrives. It has no dark scrim — see #home in the
+       stylesheet — because the character behind it is the point of the screen. -->
+  <div id="home" class="sheet">
+    <div class="card">
+      <h1>Coach Milo</h1>
+      <p>Two quick stretches, led by a coach who stands right there in your room.</p>
+      <div class="buttons">
+        <button id="btn-play" class="candy" type="button">Play</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- The start card, one tap past the home card. iOS only opens the camera from a real tap, so this
+       is a button, not an autoplay. -->
+  <div id="start" class="sheet" hidden>
+    <div class="card">
+      <h1>Coach Milo</h1>
+      <p>A friendly coach appears on your floor, greets you, and leads a short workout:
+         two stretches, about half a minute, together.</p>
+      <p class="who" id="start-note">Point your phone at the floor and move it slowly.</p>
+      <div class="buttons">
+        <button id="btn-start" class="candy" type="button">Show me my room</button>
+        <button id="btn-preview" class="candy" type="button">Try the workout without the camera</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shown when the workout finishes, and when the player ends it early. -->
+  <div id="done" class="sheet" hidden>
+    <div class="card">
+      <h2 id="done-title">Workout complete</h2>
+      <ul id="summary"></ul>
+      <p id="done-line">Nice work. Come back tomorrow and we will do it again.</p>
+      <div class="buttons">
+        <button id="btn-again" class="candy" type="button">Do it again</button>
+        <button id="btn-restart" class="candy" type="button">Back to the start</button>
+      </div>
+    </div>
+  </div>
+
+  <p id="hint" hidden></p>
+
+  <!-- Through the import map, so the entry point carries the same version as every other module. -->
+  <script type="module">
+    import 'jam/main';
+  </script>
+</body>
+</html>
